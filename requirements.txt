@@ -10,3 +10,4 @@ pandas
 deepface
 tf-keras
 mediapipe
+faiss-cpu
