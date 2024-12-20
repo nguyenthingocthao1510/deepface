@@ -6,26 +6,21 @@ import faiss
 from deepface import DeepFace
 from retinaface import RetinaFace
 
-# Cấu hình các thư mục
-hr_database_folder = r'C:\Users\20521\OneDrive\Desktop\nckh\deepface\hr_database'
+# Define folders
+hr_database_folder = 'hr_database'
 capture_image_folder = 'captured'
 metadata_folder = 'metadata'
-outcome_folder = 'outcome'
+outcome_folder = 'outcomes'
 processing_image_folder = 'processing_image'
 
+# Create folders if they don't exist
 os.makedirs(capture_image_folder, exist_ok=True)
 os.makedirs(metadata_folder, exist_ok=True)
 os.makedirs(outcome_folder, exist_ok=True)
 os.makedirs(processing_image_folder, exist_ok=True)
 
-# Chức năng chụp ảnh
 def capture_images():
-    print("Opening camera for image capture...")
     cap = cv2.VideoCapture(0)
-
-    if not cap.isOpened():
-        print("Error: Camera could not be opened.")
-        return
 
     count = 0
     while True:
@@ -48,10 +43,10 @@ def capture_images():
     cap.release()
     cv2.destroyAllWindows()
 
-# Xử lý hình ảnh bằng RetinaFace
+# Process images with labels
 def process_images_with_labels(input_folder, output_folder):
     processed_files = []
-    for root, dirs, files in os.walk(input_folder):  # Lặp qua toàn bộ thư mục
+    for root, _, files in os.walk(input_folder):
         for file_name in files:
             image_path = os.path.join(root, file_name)
             try:
@@ -61,30 +56,27 @@ def process_images_with_labels(input_folder, output_folder):
                     print(f"Error: Unable to read {image_path}. Skipping...")
                     continue
 
-                # Phát hiện khuôn mặt
+                label = os.path.basename(root)
                 faces = RetinaFace.extract_faces(img_path=image_path, align=True)
                 if not faces:
                     print(f"No faces detected in {file_name}. Skipping...")
                     continue
 
-                # Chỉ lấy khuôn mặt đầu tiên
                 face_np = faces[0]
-                face_np = cv2.medianBlur(face_np, 5)
+                face_np = cv2.medianBlur(face_np, 1)
                 face_yuv = cv2.cvtColor(face_np, cv2.COLOR_BGR2YUV)
                 face_yuv[:, :, 0] = cv2.equalizeHist(face_yuv[:, :, 0])
                 face_np = cv2.cvtColor(face_yuv, cv2.COLOR_YUV2BGR)
-                face_np = cv2.bilateralFilter(face_np, 9, 75, 75)
+                face_np = cv2.bilateralFilter(face_np, 0, 0, 0)
 
-                # Lưu ảnh đã xử lý
                 output_path = os.path.join(output_folder, f"processed_{file_name}")
                 cv2.imwrite(output_path, face_np)
-                processed_files.append({"file": output_path, "label": file_name.split('.')[0]})
+                processed_files.append({"file": output_path, "label": label})
             except Exception as e:
                 print(f"Error processing {file_name}: {e}")
     return processed_files
 
-# Lưu embeddings
-def save_embeddings_with_labels(image_files, metadata_file, model_name="Human-beings"):
+def save_embeddings_with_labels(image_files, metadata_file, model_name="GhostFaceNet"):
     embeddings = []
     for image_info in image_files:
         image_path = image_info["file"]
@@ -94,7 +86,7 @@ def save_embeddings_with_labels(image_files, metadata_file, model_name="Human-be
                 img_path=image_path,
                 model_name=model_name,
                 detector_backend='retinaface',
-                enforce_detection=False
+                enforce_detection=True
             )
             for embedding_obj in embedding_objs:
                 embedding = embedding_obj["embedding"]
@@ -107,7 +99,6 @@ def save_embeddings_with_labels(image_files, metadata_file, model_name="Human-be
     print(f"Saved embeddings to {metadata_file}")
     return embeddings
 
-# Xây dựng FAISS index
 def build_faiss_index_from_metadata_with_labels(metadata_file):
     with open(metadata_file, 'r') as f:
         metadata = json.load(f)
@@ -121,79 +112,91 @@ def build_faiss_index_from_metadata_with_labels(metadata_file):
 
     labels = [item['label'] for item in metadata]
 
-    # Chuẩn hóa embeddings trước khi thêm vào FAISS
     faiss.normalize_L2(embeddings)
     dimension = embeddings.shape[1]
     index = faiss.IndexFlatIP(dimension)
     index.add(embeddings)
     return index, labels
 
-# Tìm kiếm trong cơ sở dữ liệu HR
-def search_in_hr_database(capture_metadata, index, hr_labels, threshold=0.57):
-    """
-    Search for captured image embeddings in the HR database using FAISS.
-    Print 'label - similarity' for matches or 'unknown - similarity' otherwise.
-    """
+def search_in_hr_database(capture_metadata, index, hr_labels, threshold=0.3800):
     if not capture_metadata:
         print("Error: No metadata found for captured images.")
-        return
+        return []
 
+    outcomes = []
     for capture in capture_metadata:
         try:
             query_embedding = np.array([capture['embedding']]).astype('float32')
             faiss.normalize_L2(query_embedding)
             distances, indices = index.search(query_embedding, k=1)
 
-            print(f"\nSearch results for {capture['file']}:")
-            best_distance = distances[0][0]  # Độ tương tự cao nhất
-            best_index = indices[0][0]  # Index tương ứng
+            best_distance = distances[0][0]
+            best_index = indices[0][0]
 
             if best_distance >= threshold and best_index < len(hr_labels):
                 label = hr_labels[best_index]
-                print(f"{label} - {best_distance:.4f}")
+                outcomes.append({
+                    "label": label,
+                    "distance": best_distance
+                })
             else:
-                print(f"unknown - {best_distance:.4f}")
-
+                outcomes.append({
+                    "label": "unknown",
+                    "distance": best_distance
+                })
         except Exception as e:
             print(f"Error processing {capture['file']}: {e}")
+    return outcomes
 
-# Xử lý cơ sở dữ liệu HR
+def save_outcome(image_file, label, best_distance):
+    image_path = os.path.join(capture_image_folder, image_file)
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Error: Unable to read image {image_file}. Skipping...")
+        return
+
+    final_label = label
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30), flags=cv2.CASCADE_SCALE_IMAGE)
+    for (x, y, w, h) in faces:
+        cv2.rectangle(image, (x, y), (x + w, y + h), (204, 255, 229), 2)
+        text_label = f"{final_label} - {best_distance:.4f}"
+        cv2.putText(image, text_label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (204, 255, 229), 2)
+    
+    outcome_path = os.path.join(outcome_folder, os.path.basename(image_file))
+    cv2.imwrite(outcome_path, image)
+    print(f"Saved outcome to {outcome_path}")
+
 def process_hr_database_images(hr_folder, output_folder, metadata_file):
-    print("Processing HR database images...")
     processed_files = process_images_with_labels(hr_folder, output_folder)
     if not processed_files:
-        print("No valid processed files found in HR database.")
         return []
 
-    print("Saving HR embeddings to metadata...")
     embeddings = save_embeddings_with_labels(processed_files, metadata_file)
     return embeddings
 
-# Hàm chính
+# Main function
 def main():
-    print("Capturing and processing images...")
-    capture_images()  
+    capture_images()
 
-    print("Processing captured images...")
     captured_processed_files = process_images_with_labels(capture_image_folder, processing_image_folder)
-
-    print("Saving captured embeddings...")
     capture_metadata_file = os.path.join(metadata_folder, 'capture_metadata.json')
     capture_metadata = save_embeddings_with_labels(captured_processed_files, capture_metadata_file)
 
-    print("Processing HR database...")
     hr_metadata_file = os.path.join(metadata_folder, 'hr_metadata.json')
     hr_embeddings = process_hr_database_images(hr_database_folder, processing_image_folder, hr_metadata_file)
 
     if not hr_embeddings:
-        print("No valid HR database metadata found. Exiting.")
         return
 
-    print("Building FAISS index from HR database...")
     index, hr_labels = build_faiss_index_from_metadata_with_labels(hr_metadata_file)
 
-    print("Searching HR database for captured images...")
-    search_in_hr_database(capture_metadata, index, hr_labels)
+    outcomes = search_in_hr_database(capture_metadata, index, hr_labels)
+
+    capture_files = [f for f in os.listdir(capture_image_folder) if os.path.isfile(os.path.join(capture_image_folder, f))]
+    for capture_file, outcome in zip(capture_files, outcomes):
+        save_outcome(image_file=capture_file, label=outcome["label"], best_distance=outcome["distance"])
 
 if __name__ == "__main__":
     main()
