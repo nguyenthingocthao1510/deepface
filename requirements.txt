@@ -11,3 +11,5 @@ deepface
 tf-keras
 mediapipe
 faiss-cpu
+torch
+retina-face
