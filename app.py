@@ -118,7 +118,7 @@ def build_faiss_index_from_metadata_with_labels(metadata_file):
     index.add(embeddings)
     return index, labels
 
-def search_in_hr_database(capture_metadata, index, hr_labels, threshold=0.3800):
+def search_in_hr_database(capture_metadata, index, hr_labels, threshold=0.3600):
     if not capture_metadata:
         print("Error: No metadata found for captured images.")
         return []
@@ -132,6 +132,12 @@ def search_in_hr_database(capture_metadata, index, hr_labels, threshold=0.3800):
 
             best_distance = distances[0][0]
             best_index = indices[0][0]
+            label = hr_labels[best_index]
+
+            if best_distance >= threshold:
+                print(f'{label} - {best_distance}')
+            else: 
+                print(f'unknown - {best_distance}')
 
             if best_distance >= threshold and best_index < len(hr_labels):
                 label = hr_labels[best_index]
