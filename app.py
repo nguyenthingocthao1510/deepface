@@ -2,12 +2,12 @@ import os
 import json
 import cv2
 import numpy as np
-import faiss
 from deepface import DeepFace
 from retinaface import RetinaFace
+from annoy import AnnoyIndex
 
 # Define folders
-hr_database_folder = 'hr_database'
+hr_database_folder = 'sample_data'
 capture_image_folder = 'captured'
 metadata_folder = 'metadata'
 outcome_folder = 'outcomes'
@@ -99,26 +99,34 @@ def save_embeddings_with_labels(image_files, metadata_file, model_name="GhostFac
     print(f"Saved embeddings to {metadata_file}")
     return embeddings
 
-def build_faiss_index_from_metadata_with_labels(metadata_file):
+# Build Annoy Index
+def build_annoy_index_from_metadata_with_labels(metadata_file, dimension=512, num_trees=10, index_file="hr_annoy_index.ann"):
     with open(metadata_file, 'r') as f:
         metadata = json.load(f)
 
     if not metadata:
         raise ValueError("Metadata file is empty or no valid embeddings were found.")
 
-    embeddings = np.array([item['embedding'] for item in metadata]).astype('float32')
-    if embeddings.size == 0:
-        raise ValueError("No embeddings found in metadata.")
-
+    embeddings = [item['embedding'] for item in metadata]
     labels = [item['label'] for item in metadata]
 
-    faiss.normalize_L2(embeddings)
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatIP(dimension)
-    index.add(embeddings)
+    # Create Annoy Index
+    index = AnnoyIndex(dimension, 'angular')  # Use angular (cosine similarity)
+
+    for i, embedding in enumerate(embeddings):
+        index.add_item(i, embedding)
+
+    index.build(num_trees)
+    index.save(index_file)
+
+    print(f"Annoy index built and saved to {index_file}")
     return index, labels
 
-def search_in_hr_database(capture_metadata, index, hr_labels, threshold=0.3600):
+# Search with Annoy
+def search_in_hr_database_annoy(capture_metadata, index_file, hr_labels, threshold=0.3300):
+    index = AnnoyIndex(512, 'angular')
+    index.load(index_file)  # Load Annoy index
+
     if not capture_metadata:
         print("Error: No metadata found for captured images.")
         return []
@@ -126,21 +134,19 @@ def search_in_hr_database(capture_metadata, index, hr_labels, threshold=0.3600):
     outcomes = []
     for capture in capture_metadata:
         try:
-            query_embedding = np.array([capture['embedding']]).astype('float32')
-            faiss.normalize_L2(query_embedding)
-            distances, indices = index.search(query_embedding, k=1)
+            query_embedding = capture['embedding']
+            nearest_indices, distances = index.get_nns_by_vector(query_embedding, n=1, include_distances=True)
 
-            best_distance = distances[0][0]
-            best_index = indices[0][0]
+            best_distance = distances[0]
+            best_index = nearest_indices[0]
             label = hr_labels[best_index]
 
-            if best_distance >= threshold:
+            if best_distance <= threshold:
                 print(f'{label} - {best_distance}')
-            else: 
+            else:
                 print(f'unknown - {best_distance}')
 
-            if best_distance >= threshold and best_index < len(hr_labels):
-                label = hr_labels[best_index]
+            if best_distance <= threshold:
                 outcomes.append({
                     "label": label,
                     "distance": best_distance
@@ -154,6 +160,7 @@ def search_in_hr_database(capture_metadata, index, hr_labels, threshold=0.3600):
             print(f"Error processing {capture['file']}: {e}")
     return outcomes
 
+# Save the outcome image
 def save_outcome(image_file, label, best_distance):
     image_path = os.path.join(capture_image_folder, image_file)
     image = cv2.imread(image_path)
@@ -174,6 +181,7 @@ def save_outcome(image_file, label, best_distance):
     cv2.imwrite(outcome_path, image)
     print(f"Saved outcome to {outcome_path}")
 
+# Process HR Database Images
 def process_hr_database_images(hr_folder, output_folder, metadata_file):
     processed_files = process_images_with_labels(hr_folder, output_folder)
     if not processed_files:
@@ -196,9 +204,10 @@ def main():
     if not hr_embeddings:
         return
 
-    index, hr_labels = build_faiss_index_from_metadata_with_labels(hr_metadata_file)
+    index_file = os.path.join(metadata_folder, "hr_annoy_index.ann")
+    index, hr_labels = build_annoy_index_from_metadata_with_labels(hr_metadata_file, index_file=index_file)
 
-    outcomes = search_in_hr_database(capture_metadata, index, hr_labels)
+    outcomes = search_in_hr_database_annoy(capture_metadata, index_file, hr_labels)
 
     capture_files = [f for f in os.listdir(capture_image_folder) if os.path.isfile(os.path.join(capture_image_folder, f))]
     for capture_file, outcome in zip(capture_files, outcomes):
