@@ -10,4 +10,7 @@ pandas
 deepface
 tf-keras
 mediapipe
-faiss-cpu
+# faiss-cpu
+torch
+retina-face
+hnswlib
