@@ -7,7 +7,7 @@ from retinaface import RetinaFace
 from annoy import AnnoyIndex
 
 # Define folders
-hr_database_folder = 'sample_data'
+hr_database_folder = 'hr_database'
 capture_image_folder = 'captured'
 metadata_folder = 'metadata'
 outcome_folder = 'outcomes'
